@@ -7,16 +7,18 @@ using NetMQ.Sockets;
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Numerics;
 using System.Reflection;
 using System.Reflection.Metadata.Ecma335;
 using System.Runtime.Intrinsics.X86;
+using System.Security.Cryptography.Xml;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace Audio // Note: actual namespace depends on the project name.
 {
-    class Audio
+    class Audio // Todo : testing SuperSampling
     {
-        static readonly int SampleRate = 44100;
+        static readonly int SampleRate = 48000;
         static readonly int BitDepth = 16;
         static readonly int ChannelCount = 1;
         static readonly int BufferMilliseconds = 100;
@@ -25,23 +27,35 @@ namespace Audio // Note: actual namespace depends on the project name.
         static double hue = 0d;
         static RequestSocket client;
         static Stopwatch upsTimer = new Stopwatch();
-        static Byte[] buffer = new Byte[128 * 128 * 3];
-        static Byte[] smoothBuffer = new Byte[128 * 128 * 3];
+        static Byte[] buffer = new Byte[renderX * renderY * 3];
+        static Byte[] smoothBufferMaxY = new byte[renderX * 3];
+        static int[] standTimeDropping = new int[renderX * 3];
+        static Byte[] smoothBuffer = new Byte[renderX * renderY * 3];
 
-        static int bufferSelector = 1;
-        static Byte[] sendBuffer1 = new Byte[128 * 128 * 3];
-        static Byte[] sendBuffer2 = new Byte[128 * 128 * 3];
-        static bool dropping = false;
-        static float ups, drawps,sps;
+        static double[] AudioBuffer = new double[SampleRate*10];
+        static long AudioBufferLength = 0;
+        static float ups, drawps, sps;
         static List<byte[]> renderCache = new List<byte[]>();
+
+        const bool generateFunction = false;
+
+        const int superSampling = 2;
+        const int screenX = 128;
+        const int screenY = 128;
+
+        const int renderBufferSize = 3;
+
+        const int renderX = screenX * superSampling;
+        const int renderY = screenY * superSampling;
         static void SendLoop()
         {
             Stopwatch sw = new Stopwatch();
-            while(true)
+            while (true)
             {
                 sw.Start();
                 while (renderCache.Count == 0) { }
                 byte[] frame = renderCache[0];
+                //byte[] frame = new byte[128 * 128 * 3];
                 while (frame == null) { frame = renderCache[0]; }
                 client.SendFrame(frame);
                 renderCache.RemoveAt(0);
@@ -57,24 +71,64 @@ namespace Audio // Note: actual namespace depends on the project name.
         static Stopwatch timer = new Stopwatch();
         static void Drop()
         {
-            for (int x = 0; x < 128; x++)
+            for (int x = 0; x < renderX; x++)
             {
-                for (int y = 127; y >= 0; y--)
+                for (int y = renderY - 1; y >= 0; y--)
                 {
-                    if (buffer[((127 - x) * 3 + y * 128 * 3) + 0] == 255)
+                    if (buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] == 255)
                     {
-                        buffer[((127 - x) * 3 + y * 128 * 3) + 0] = 0;
+                        buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = 0;
                         break;
                     }
                 }
             }
+        }
+        static void DropTopping()
+        {
+            for (int x = 0; x < renderX; x++)
+            {
+                if (standTimeDropping[x] <= 200) continue;
+                for (int i = 0; i < (double)(standTimeDropping[x]-200)/5d; i++)
+                {
+                    if (smoothBufferMaxY[x] > 0) smoothBufferMaxY[x] -= 1;
+                }
+            }
+        }
+        static Byte[] GenerateTopping(byte[] buf)
+        {
+            for (int x = 0; x < renderX; x++)
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    int maxY = 0;
+                    for (int y = renderY - 1; y >= 0; y--)
+                    {
+                        if (buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + i] > 0)
+                        {
+                            maxY = y;
+                            break;
+                        }
+                    }
+                    if (smoothBufferMaxY[x] < maxY)
+                    {
+                        smoothBufferMaxY[x] = (byte)maxY;
+                        standTimeDropping[x] = 0;
+                    }
+                    else
+                    {
+                        standTimeDropping[x] += 1;
+                    }
+                    buf[(((renderX - 1) - x) * 3 + smoothBufferMaxY[x] * renderX * 3) + i] = 255;
+                }
+            }
+            return buf;
         }
         static void GenerateBuffer(double[] data)
         {
             double[] paddedAudio = FftSharp.Pad.ZeroPad(data);
             double[] fftMag = FftSharp.Transform.FFTmagnitude(paddedAudio);
             double fftPeriod = FftSharp.Transform.FFTfreqPeriod(SampleRate, fftMag.Length);
-            for (int i = 0; i < 128 * 128 * 3; i++)
+            for (int i = 0; i < renderX * renderY * 3; i++)
             {
                 smoothBuffer[i] = 0;
             }
@@ -88,99 +142,245 @@ namespace Audio // Note: actual namespace depends on the project name.
 
             Array.Copy(fft, FftValues, fft.Length);
 
-
-            int maxX = 128;
-            for (int x = 0; x < maxX; x++)
+            for (int x = 0; x < renderX; x++)
             {
                 double sum = 0;
                 int values = 0;
 
 
-                double factor = 1+((double)(x) / ((double)maxX));
-                double factorNext = 1+((double)(x+1) / ((double)maxX));
-                
-                double logScale = 10; // 4.3
-                double frequencyCut = (Math.Pow(factor, logScale))*20;
-                double frequencyCutNext = (Math.Pow(factorNext, logScale)) * 20;
+                double factor = 1 + ((double)(x) / ((double)renderX));
+                double factorNext = 1 + ((double)(x + 1) / ((double)renderX));
 
-                //Console.WriteLine(frequencyCut);
-                //Console.WriteLine(frequencyCutNext);
-                //if (factor > 1) continue;
-                //Console.WriteLine(fft.Length);
-                for (int i = 0; i < fft.Length; i++)
+                double minFreq = 20;
+                double maxFreq = 20000;
+                double bassFreq = 250;
+                double highFreq = 4000;
+                if (x < ((double)renderX / 3)*1) // Bass
                 {
-                    //double frequency = i * fftPeriod;
-                    double frequency = freq[i];
-                    //Console.WriteLine(frequency.ToString());
-                    if (frequency > frequencyCutNext) continue;
-                    if (frequency < frequencyCut) continue;
-                    //Console.WriteLine("test");
-                    values++;
-                    sum += FftValues[i];
+                    double logScale = Math.Log(bassFreq / minFreq, (1d + (1d / 3d)));
+                    double frequencyCut = (Math.Pow(factor, logScale)) * minFreq;
+                    double frequencyCutNext = (Math.Pow(factorNext, logScale)) * minFreq;
+                    
+                    for (int i = 0; i < fft.Length; i++)
+                    {
+                        double frequency = freq[i];
+                        if (frequency > frequencyCutNext) continue;
+                        if (frequency < frequencyCut) continue;
+                        values++;
+                        sum += FftValues[i];
+                    }
                 }
+                if (x < ((double)renderX / 3) * 2 && x > ((double)renderX / 3) * 1) // Mid
+                {
+                    factor -= 1d / 3d;
+                    factorNext -= 1d / 3d;
+                    double logScale = Math.Log(highFreq / bassFreq, (1d + (1d / 3d)));
+                    double frequencyCut = (Math.Pow(factor, logScale)) * bassFreq;
+                    double frequencyCutNext = (Math.Pow(factorNext, logScale)) * bassFreq;
+                    //Console.WriteLine
+                    for (int i = 0; i < fft.Length; i++)
+                    {
+                        double frequency = freq[i];
+                        if (frequency > frequencyCutNext) continue;
+                        if (frequency < frequencyCut) continue;
+                        values++;
+                        sum += FftValues[i];
+                    }
+                }
+                if (x < ((double)renderX / 3) * 3 && x > ((double)renderX / 3) * 2) // High
+                {
+                    factor -= 2d / 3d;
+                    factorNext -= 2d / 3d;
+                    double logScale = Math.Log(maxFreq / highFreq, (1d + (1d / 3d)));
+                    double frequencyCut = (Math.Pow(factor, logScale)) * highFreq;
+                    double frequencyCutNext = (Math.Pow(factorNext, logScale)) * highFreq;
+                    
+                    for (int i = 0; i < fft.Length; i++)
+                    {
+                        double frequency = freq[i];
+                        if (frequency > frequencyCutNext) continue;
+                        if (frequency < frequencyCut) continue;
+                        values++;
+                        sum += FftValues[i];
+                    }
+                }
+                
 
                 sum = sum / values;
-                sum = sum * 1.5d;
+                sum = sum * 1.5d * superSampling;
                 for (int y = 0; y < sum; y++)
                 {
-                    buffer[((127 - x) * 3 + y * 128 * 3) + 0] = 255;
+                    buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = 255;
                 }
             }
+        }
+        static void SendToScreenBuffer(byte[] entry)
+        {
+            byte[] screenBuf = new byte[screenX * screenY * 3];
+            for (int x = 0; x < screenX; x++)
+            {
+                for (int y = 0; y < screenY; y++)
+                {
+                    long totalR = 0;
+                    long totalG = 0;
+                    long totalB = 0;
+                    for (int SSx = 0; SSx < superSampling; SSx++)
+                    {
+                        for (int SSy = 0; SSy < superSampling; SSy++)
+                        {
+                            totalR += entry[(((renderX - 1) - ((x * superSampling) + SSx)) * 3 + ((y * superSampling) + SSy) * renderX * 3) + 1];
+                            totalB += entry[(((renderX - 1) - ((x * superSampling) + SSx)) * 3 + ((y * superSampling) + SSy) * renderX * 3) + 0];
+                            totalG += entry[(((renderX - 1) - ((x * superSampling) + SSx)) * 3 + ((y * superSampling) + SSy) * renderX * 3) + 2];
+                        }
+                    }
+                    byte avgR = (byte)Math.Round(((double)totalR / (superSampling * superSampling)), 0);
+                    byte avgG = (byte)Math.Round(((double)totalG / (superSampling * superSampling)), 0);
+                    byte avgB = (byte)Math.Round(((double)totalB / (superSampling * superSampling)), 0);
+
+                    //if (avgR != 0) Console.WriteLine(avgR);
+                    screenBuf[(((screenX - 1) - x) * 3 + y * screenX * 3) + 0] = avgB;
+                    screenBuf[(((screenX - 1) - x) * 3 + y * screenX * 3) + 1] = avgR;
+                    screenBuf[(((screenX - 1) - x) * 3 + y * screenX * 3) + 2] = avgG;
+                }
+            }
+            if (renderCache.Count == renderBufferSize) renderCache.RemoveAt(renderBufferSize-1);
+            renderCache.Add(screenBuf);
         }
         static void GenerateFrame()
         {
             timer.Start();
-            int maxX = 128;
-            for (int x = 0; x < 128; x++)
+            if (generateFunction)
             {
-                double factor = (double)(x + 1) / ((double)maxX + 1);
-                for (int y = 127; y >= 0; y--)
+                for (int x = 0; x < renderX; x++)
                 {
-                    if (buffer[((127 - x) * 3 + y * 128 * 3) + 0] != 255) continue;
-                    for (int fx = 0; fx < 128; fx++)
+                    double factor = (double)(x + 1) / ((double)renderX + 1);
+                    for (int y = renderY - 1; y >= 0; y--)
                     {
-                        double quadraticFactor = -(Math.Pow(factor+0.75,10));
-                        double cur = (quadraticFactor * Math.Pow((fx - x), 2) + y);
-                        if (cur < 0) continue;
-                        if (cur > 255) continue;
-                        for (int cy = 0; cy < (byte)cur; cy++)
+                        if (buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] != 255) continue;
+                        for (int fx = 0; fx < renderX; fx++)
                         {
-                            if (fx < ((maxX / 3d) * 1))
+                            double quadraticFactor = -(Math.Pow(factor + 0.75, 10));
+                            double cur = (quadraticFactor * Math.Pow((fx - x), 2) + y);
+                            if (cur < 0) continue;
+                            //if (cur > 255) continue;
+                            for (int cy = 0; cy < (int)cur; cy++)
                             {
-                                smoothBuffer[((127 - fx) * 3 + cy * 128 * 3) + 0] = 255;
-                                smoothBuffer[((127 - fx) * 3 + cy * 128 * 3) + 2] = 0;
-                                smoothBuffer[((127 - fx) * 3 + cy * 128 * 3) + 1] = 0;
+                                if (fx < ((renderX / 3d) * 1))
+                                {
+                                    smoothBuffer[(((renderX - 1) - fx) * 3 + cy * renderX * 3) + 0] = 255;
+                                    smoothBuffer[(((renderX - 1) - fx) * 3 + cy * renderX * 3) + 2] = 0;
+                                    smoothBuffer[(((renderX - 1) - fx) * 3 + cy * renderX * 3) + 1] = 0;
+                                    continue;
+                                }
+                                if (fx < ((renderX / 3d) * 2))
+                                {
+                                    smoothBuffer[(((renderX - 1) - fx) * 3 + cy * renderX * 3) + 2] = 255;
+                                    smoothBuffer[(((renderX - 1) - fx) * 3 + cy * renderX * 3) + 0] = 0;
+                                    smoothBuffer[(((renderX - 1) - fx) * 3 + cy * renderX * 3) + 1] = 0;
+                                    continue;
+                                }
+                                if (fx < ((renderX / 3d) * 3))
+                                {
+                                    smoothBuffer[(((renderX - 1) - fx) * 3 + cy * renderX * 3) + 1] = 255;
+                                    smoothBuffer[(((renderX - 1) - fx) * 3 + cy * renderX * 3) + 0] = 0;
+                                    smoothBuffer[(((renderX - 1) - fx) * 3 + cy * renderX * 3) + 2] = 0;
+                                    continue;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                int[] yMax = new int[renderX];
+                for (int x = 0; x < renderX; x++)
+                {
+                    int maxY = 0;
+                    for (int y = renderY - 1; y >= 0; y--)
+                    {
+                        if (buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] != 255) continue;
+                        //Console.WriteLine("tset");
+                        maxY = y;
+                        break;
+                    }
+                    yMax[x] = maxY;
+                }
+                int lastX = 0;
+                for (int x = 0; x < renderX; x++)
+                {
+                    int x1 = lastX;
+                    int y1 = yMax[x1];
+                    int x2=0;
+                    for (int cx = x; cx < renderX; cx++)
+                    {
+                        if (yMax[cx] == 0) continue;
+                        x2 = cx;
+                        break;
+                    }
+                    int y2 = yMax[x2];
+                    int curMaxY = (int)((((double)(y2 - y1)) / ((double)(x2 - x1))) * ((double)(x - x1))) + y1;
+                    if (yMax[x] != 0) lastX = x;
+                    if (x1 == 0)
+                    {
+                        continue;
+                    }
+                    if (x2 == 0)
+                    {
+                        continue;
+                    }
+                    double huerange = 90;
+                    for (int y = 0; y < renderY; y++)
+                    {
+                        if(y < curMaxY)
+                        {
+                            Color col = ColorFromHSV(huerange - (((double)y / (double)renderY) * huerange), 1, 1);
+                            smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = col.R;
+                            smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = col.G;
+                            smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = col.B;
+                            continue;
+                            if (x < ((renderX / 100d) * 33.333d))
+                            {
+                                //Color col = ColorFromHSV((((double)y / (double)renderY) * 116d), 1, 1);
+                                smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = col.R;
+                                smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = col.G;
+                                smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = col.B;
                                 continue;
                             }
-                            if (fx < ((maxX / 3d) * 2))
+                            if (x < ((renderX / 100d) * 66.666d))
                             {
-                                smoothBuffer[((127 - fx) * 3 + cy * 128 * 3) + 2] = 255;
-                                smoothBuffer[((127 - fx) * 3 + cy * 128 * 3) + 0] = 0;
-                                smoothBuffer[((127 - fx) * 3 + cy * 128 * 3) + 1] = 0;
+                                smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = 255;
+                                smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = 0;
+                                smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = 0;
                                 continue;
                             }
-                            if (fx < ((maxX / 3d) * 3))
+                            if (x < ((renderX / 100d) * 100d))
                             {
-                                smoothBuffer[((127 - fx) * 3 + cy * 128 * 3) + 1] = 255;
-                                smoothBuffer[((127 - fx) * 3 + cy * 128 * 3) + 0] = 0;
-                                smoothBuffer[((127 - fx) * 3 + cy * 128 * 3) + 2] = 0;
+                                smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = 255;
+                                smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = 0;
+                                smoothBuffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = 0;
                                 continue;
                             }
                         }
+                        else
+                        {
+                            break;
+                        }
                     }
-                    break;
                 }
             }
             smoothBuffer = IntensifyBuffer(smoothBuffer);
-            smoothBuffer = cloneRoateBuffer(smoothBuffer);
+            smoothBuffer = GenerateTopping(smoothBuffer);
+            //smoothBuffer = cloneRoateBuffer(smoothBuffer);
+
             Color c = ColorFromHSV(hue, 1, 1);
             hue += 0.1d;
             //smoothBuffer = fillBlanksBuffer(smoothBuffer, c.R, c.G, c.B);
             byte[] entry = new byte[smoothBuffer.Length];
-            smoothBuffer.CopyTo(entry,0);
+            smoothBuffer.CopyTo(entry, 0);
 
-            if (renderCache.Count == 5) renderCache.RemoveAt(4);
-            renderCache.Add(entry);
+            SendToScreenBuffer(entry);
 
 
 
@@ -199,12 +399,13 @@ namespace Audio // Note: actual namespace depends on the project name.
         static int dataLength;
         static void Main(string[] args)
         {
+            //Console.WriteLine();
+            //while (true) { }
             client = new RequestSocket(">tcp://192.168.178.53:1500");
             FConsole.Initialize("Visualizer", ConsoleColor.Red, ConsoleColor.Black);
             AudioValues = new double[SampleRate * BufferMilliseconds / 1000];
             double[] paddedAudio = FftSharp.Pad.ZeroPad(AudioValues);
             double[] fftMag = FftSharp.Transform.FFTmagnitude(paddedAudio);
-            FftValues = new double[fftMag.Length];
             var capture = new WasapiLoopbackCapture();
             capture.WaveFormat = new NAudio.Wave.WaveFormat(rate: SampleRate, bits: BitDepth, channels: ChannelCount);
 
@@ -214,63 +415,83 @@ namespace Audio // Note: actual namespace depends on the project name.
                     AudioValues[i] = BitConverter.ToInt16(a.Buffer, i * 2);
                 upsTimer.Stop();
                 dataLength = a.BytesRecorded;
-                //Console.WriteLine("UPS : " + (1000 / upsTimer.ElapsedMilliseconds));
+                Array.Copy(AudioValues, 0, AudioBuffer, AudioBufferLength, a.BytesRecorded/2);
+                AudioBufferLength += a.BytesRecorded/2;
                 ups = 1000 / upsTimer.ElapsedMilliseconds;
                 upsTimer.Reset();
                 upsTimer.Start();
             };
             capture.StartRecording();
             upsTimer.Start();
-            for (int i = 0; i < 128 * 128 * 3; i++)
+            for (int i = 0; i < renderX * renderY * 3; i++)
             {
                 buffer[i] = 0;
             }
             Thread t = new Thread(SendLoop);
             t.Start();
+            Stopwatch cycle = new Stopwatch();
+            cycle.Start();
             while (true)
             {
-                if (dataLength == 0) continue;
-                //Console.WriteLine(dataLength);
-                //Console.WriteLine(AudioValues.Length);
-                try {
-                    double[] shortenedData = new double[(dataLength / 2)];
-                    Array.Copy(AudioValues, 0, shortenedData, 0, dataLength / 2);
-
-                    int samples = dataLength / 882;
-                    //Console.WriteLine(samples);
-                    for (int i = 0; i < samples; i++)
-                    {
-                        double[] data = new double[shortenedData.Length / samples];
-                        Array.Copy(shortenedData, i * (shortenedData.Length / samples), data, 0, shortenedData.Length / samples);
-                        paddedAudio = FftSharp.Pad.ZeroPad(data);
-                        GenerateBuffer(paddedAudio);
-                        GenerateFrame();
-                        Drop();
-                        Drop();
-                        Drop();
-                        Stopwatch wait = new Stopwatch();
-                        wait.Start();
-                        //while(wait.ElapsedMilliseconds < 4)
-                        //{
-
-                        //Drop();
-                        //GenerateFrame();
-                        //Thread.Sleep(1);
-                        //}
-                        wait.Stop();
-                        wait.Reset();
-                    }
-                } 
-                catch(Exception ex)
+                //if (dataLength == 0)
+                //{
+                //    Thread.Sleep(1);
+                //    continue;
+                //}
+                try
                 {
 
+                    long sampleSize = 4800;
+                    long skipSize = sampleSize/8;
+                    if (AudioBufferLength < sampleSize)
+                    {
+                        
+                        continue;
+                    }
+                    //double[] shortenedData = new double[AudioValues.Length];
+                    //Array.Copy(AudioValues, 0, shortenedData, 0, AudioValues.Length);
+
+                    //int samples = dataLength / 882;
+                    
+                    
+                    double[] data = new double[sampleSize];
+                    FftValues = new double[sampleSize];
+                    //Array.Copy(shortenedData, i * (shortenedData.Length / samples), data, 0, shortenedData.Length / samples);
+                    Array.Copy(AudioBuffer, 0, data, 0, sampleSize);
+                    Array.Copy(AudioBuffer, skipSize, AudioBuffer, 0, sampleSize);
+                    AudioBufferLength -= skipSize;
+                    //Console.WriteLine(AudioBufferLength);
+                    
+                    //Console.WriteLine(AudioBufferLength);
+                    paddedAudio = FftSharp.Pad.ZeroPad(data);
+                    GenerateBuffer(paddedAudio);
+                    GenerateFrame();
+
+                    for (int z = 0; z < 4 * superSampling; z++) Drop();
+                    for (int z = 0; z < 1; z++) DropTopping();
+                    /*for (int x = 0; x < renderX; x++)
+                    {
+                        for (int y = renderY - 1; y >= 0; y--)
+                        {
+                            buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = 0;
+                        }
+                    }*/
+
+                    Console.Clear();
+                    Console.SetCursorPosition(0, 0);
+                    Console.WriteLine("Draw : " + (1000/cycle.ElapsedMilliseconds) + "/s");
+                    Console.WriteLine("Update : " + ups + "/s");
+                    Console.WriteLine("Send : " + sps + "/s");
+                    Console.WriteLine("Rendercache : " + renderCache.Count);
+                    Console.WriteLine("AudioBuffer : " + AudioBufferLength);
+                    cycle.Stop();
+                    cycle.Restart();
                 }
-                
-                Console.Clear();
-                Console.SetCursorPosition(0, 0);
-                Console.WriteLine("Draw : " + drawps + "/s");
-                Console.WriteLine("Update : " + ups + "/s");
-                Console.WriteLine("Send : " + sps + "/s");
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ex.ToString());
+                }
+
             }
 
             Console.WriteLine("C# Audio Level Meter");
@@ -279,26 +500,26 @@ namespace Audio // Note: actual namespace depends on the project name.
         }
         static byte[] IntensifyBuffer(byte[] buf)
         {
-            for (int x = 0; x < 128; x++)
+            for (int x = 0; x < renderX; x++)
             {
                 for (int i = 0; i < 3; i++)
                 {
                     int maxY = -1;
-                    for (int y = 127; y >= 0; y--)
+                    for (int y = renderY - 1; y >= 0; y--)
                     {
-                        if (buf[((127 - x) * 3 + y * 128 * 3) + i] > 0)
+                        if (buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + i] > 0)
                         {
                             maxY = y;
                             break;
                         }
                     }
                     if (maxY == -1) continue;
-                    for (int y = 0; y < maxY+1; y++)
+                    for (int y = 0; y < maxY + 1; y++)
                     {
-                        double scalingFactor = 0.8d;
-                        double factor = 1d-((double)(y + 1) / (double)(maxY + 1));
+                        double scalingFactor = 0.3d;
+                        double factor = 1d - ((double)(y + 1) / (double)(maxY + 1));
                         factor = Math.Pow(factor, scalingFactor);
-                        buf[((127 - x) * 3 + y * 128 * 3) + i] = (byte)(buf[((127 - x) * 3 + y * 128 * 3) + i]*factor);
+                        buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + i] = (byte)(buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + i] * factor);
                     }
                 }
             }
@@ -306,42 +527,36 @@ namespace Audio // Note: actual namespace depends on the project name.
         }
         static byte[] cloneRoateBuffer(byte[] buf)
         {
-            for (int x = 0; x < 128; x++)
+            for (int x = 0; x < renderX; x++)
             {
-                for (int y = 0; y < 128; y++)
+                for (int y = 0; y < renderY; y++)
                 {
-                    if (buf[((127 - x) * 3 + y * 128 * 3) + 0] > 0)
-                        buf[((x) * 3 + (127 - y) * 128 * 3) + 0] = buf[((127 - x) * 3 + y * 128 * 3) + 0];
-                    if (buf[((127 - x) * 3 + y * 128 * 3) + 1] > 0)
-                        buf[((x) * 3 + (127 - y) * 128 * 3) + 1] = buf[((127 - x) * 3 + y * 128 * 3) + 1];
-                    if (buf[((127 - x) * 3 + y * 128 * 3) + 2] > 0)
-                        buf[((x) * 3 + (127 - y) * 128 * 3) + 2] = buf[((127 - x) * 3 + y * 128 * 3) + 2];
+                    if (buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] > 0)
+                        buf[(x * 3 + ((renderY - 1) - y) * renderX * 3) + 0] = buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0];
+                    if (buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] > 0)
+                        buf[(x * 3 + ((renderY - 1) - y) * renderX * 3) + 1] = buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1];
+                    if (buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] > 0)
+                        buf[(x * 3 + ((renderY - 1) - y) * renderX * 3) + 2] = buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2];
                 }
             }
             return buf;
         }
-        static byte[] fillBlanksBuffer(byte[] buf,byte r,byte g, byte b)
+        static byte[] fillBlanksBuffer(byte[] buf, byte r, byte g, byte b)
         {
-            for (int x = 0; x < 128; x++)
+            for (int x = 0; x < renderX; x++)
             {
-                for (int y = 0; y < 128; y++)
+                for (int y = 0; y < renderY; y++)
                 {
-                    if(buf[((127 - x) * 3 + y * 128 * 3) + 0] == 0 && buf[((127 - x) * 3 + y * 128 * 3) + 1] == 0 && buf[((127 - x) * 3 + y * 128 * 3) + 2] == 0)
+                    if (buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] == 0 && buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] == 0 && buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] == 0)
                     {
-                        buf[((127 - x) * 3 + y * 128 * 3) + 0] = b;
-                        buf[((127 - x) * 3 + y * 128 * 3) + 1] = r;
-                        buf[((127 - x) * 3 + y * 128 * 3) + 2] = g;
+                        buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = b;
+                        buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = r;
+                        buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = g;
                     }
                 }
             }
             return buf;
         }
-        static WaveInEvent waveIn = new NAudio.Wave.WaveInEvent
-        {
-            DeviceNumber = 0, // indicates which microphone to use
-            WaveFormat = new NAudio.Wave.WaveFormat(rate: 44100, bits: 16, channels: 1),
-            BufferMilliseconds = 20
-        };
         public static void ColorToHSV(Color color, out double hue, out double saturation, out double value)
         {
             int max = Math.Max(color.R, Math.Max(color.G, color.B));
@@ -375,23 +590,6 @@ namespace Audio // Note: actual namespace depends on the project name.
                 return Color.FromArgb(255, t, p, v);
             else
                 return Color.FromArgb(255, v, p, q);
-        }
-
-        static void WaveIn_DataAvailable(object? sender, NAudio.Wave.WaveInEventArgs e)
-        {
-            // copy buffer into an array of integers
-            Int16[] values = new Int16[e.Buffer.Length / 2];
-            Buffer.BlockCopy(e.Buffer, 0, values, 0, e.Buffer.Length);
-
-            // determine the highest value as a fraction of the maximum possible value
-            float fraction = (float)values.Max() / 32768;
-
-            // print a level meter using the console
-            string bar = new('#', (int)(fraction * 70));
-            string meter = "[" + bar.PadRight(60, '-') + "]";
-            Console.CursorLeft = 0;
-            Console.CursorVisible = false;
-            Console.Write($"{meter} {fraction * 100:00.0}%");
         }
     }
 }
