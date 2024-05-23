@@ -25,7 +25,6 @@ namespace Audio // Note: actual namespace depends on the project name.
         static double[] AudioValues;
         static double[] FftValues;
         static double hue = 0d;
-        static RequestSocket client;
         static Stopwatch upsTimer = new Stopwatch();
         static Byte[] buffer = new Byte[renderX * renderY * 3];
         static Byte[] smoothBufferMaxY = new byte[renderX * 3];
@@ -34,7 +33,7 @@ namespace Audio // Note: actual namespace depends on the project name.
 
         static double[] AudioBuffer = new double[SampleRate*10];
         static long AudioBufferLength = 0;
-        static float ups, drawps, sps;
+        static float ups, drawps;
         static List<byte[]> renderCache = new List<byte[]>();
 
         const bool generateFunction = false;
@@ -43,30 +42,10 @@ namespace Audio // Note: actual namespace depends on the project name.
         const int screenX = 128;
         const int screenY = 128;
 
-        const int renderBufferSize = 3;
-
         const int renderX = screenX * superSampling;
         const int renderY = screenY * superSampling;
-        static void SendLoop()
-        {
-            Stopwatch sw = new Stopwatch();
-            while (true)
-            {
-                sw.Start();
-                while (renderCache.Count == 0) { }
-                byte[] frame = renderCache[0];
-                //byte[] frame = new byte[128 * 128 * 3];
-                while (frame == null) { frame = renderCache[0]; }
-                client.SendFrame(frame);
-                renderCache.RemoveAt(0);
-                Msg message = new Msg();
-                message.InitEmpty();
-                client.Receive(ref message);
-                sw.Stop();
-                sps = 1000 / sw.ElapsedMilliseconds;
-                sw.Reset();
-            }
-        }
+
+        static PanelRenderer renderer;
 
         static Stopwatch timer = new Stopwatch();
         static void Drop()
@@ -216,35 +195,7 @@ namespace Audio // Note: actual namespace depends on the project name.
         }
         static void SendToScreenBuffer(byte[] entry)
         {
-            byte[] screenBuf = new byte[screenX * screenY * 3];
-            for (int x = 0; x < screenX; x++)
-            {
-                for (int y = 0; y < screenY; y++)
-                {
-                    long totalR = 0;
-                    long totalG = 0;
-                    long totalB = 0;
-                    for (int SSx = 0; SSx < superSampling; SSx++)
-                    {
-                        for (int SSy = 0; SSy < superSampling; SSy++)
-                        {
-                            totalR += entry[(((renderX - 1) - ((x * superSampling) + SSx)) * 3 + ((y * superSampling) + SSy) * renderX * 3) + 1];
-                            totalB += entry[(((renderX - 1) - ((x * superSampling) + SSx)) * 3 + ((y * superSampling) + SSy) * renderX * 3) + 0];
-                            totalG += entry[(((renderX - 1) - ((x * superSampling) + SSx)) * 3 + ((y * superSampling) + SSy) * renderX * 3) + 2];
-                        }
-                    }
-                    byte avgR = (byte)Math.Round(((double)totalR / (superSampling * superSampling)), 0);
-                    byte avgG = (byte)Math.Round(((double)totalG / (superSampling * superSampling)), 0);
-                    byte avgB = (byte)Math.Round(((double)totalB / (superSampling * superSampling)), 0);
-
-                    //if (avgR != 0) Console.WriteLine(avgR);
-                    screenBuf[(((screenX - 1) - x) * 3 + y * screenX * 3) + 0] = avgB;
-                    screenBuf[(((screenX - 1) - x) * 3 + y * screenX * 3) + 1] = avgR;
-                    screenBuf[(((screenX - 1) - x) * 3 + y * screenX * 3) + 2] = avgG;
-                }
-            }
-            if (renderCache.Count == renderBufferSize) renderCache.RemoveAt(renderBufferSize-1);
-            renderCache.Add(screenBuf);
+            renderer.addFrame(entry);
         }
         static void GenerateFrame()
         {
@@ -401,7 +352,10 @@ namespace Audio // Note: actual namespace depends on the project name.
         {
             //Console.WriteLine();
             //while (true) { }
-            client = new RequestSocket(">tcp://192.168.178.53:1500");
+            renderer = new PanelRenderer(screenX,screenY,superSampling,3);
+            renderer.connect("192.168.178.53", 1500);
+
+            //client = new RequestSocket(">tcp://192.168.178.53:1500");
             FConsole.Initialize("Visualizer", ConsoleColor.Red, ConsoleColor.Black);
             AudioValues = new double[SampleRate * BufferMilliseconds / 1000];
             double[] paddedAudio = FftSharp.Pad.ZeroPad(AudioValues);
@@ -427,8 +381,8 @@ namespace Audio // Note: actual namespace depends on the project name.
             {
                 buffer[i] = 0;
             }
-            Thread t = new Thread(SendLoop);
-            t.Start();
+            //Thread t = new Thread(SendLoop);
+            //t.Start();
             Stopwatch cycle = new Stopwatch();
             cycle.Start();
             while (true)
@@ -441,7 +395,7 @@ namespace Audio // Note: actual namespace depends on the project name.
                 try
                 {
 
-                    long sampleSize = 4800;
+                    long sampleSize = 4800;//4800
                     long skipSize = sampleSize/8;
                     if (AudioBufferLength < sampleSize)
                     {
@@ -481,7 +435,7 @@ namespace Audio // Note: actual namespace depends on the project name.
                     Console.SetCursorPosition(0, 0);
                     Console.WriteLine("Draw : " + (1000/cycle.ElapsedMilliseconds) + "/s");
                     Console.WriteLine("Update : " + ups + "/s");
-                    Console.WriteLine("Send : " + sps + "/s");
+                    Console.WriteLine("Send : " + renderer.getSendRate() + "/s");
                     Console.WriteLine("Rendercache : " + renderCache.Count);
                     Console.WriteLine("AudioBuffer : " + AudioBufferLength);
                     cycle.Stop();
