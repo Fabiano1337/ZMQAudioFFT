@@ -19,6 +19,7 @@ namespace Audio // Note: actual namespace depends on the project name.
     class Audio // Todo : testing SuperSampling
     {
         static readonly int SampleRate = 48000;
+        static readonly int FftSize = 4096/2;
         static readonly int BitDepth = 16;
         static readonly int ChannelCount = 1;
         static readonly int BufferMilliseconds = 100;
@@ -38,12 +39,12 @@ namespace Audio // Note: actual namespace depends on the project name.
 
         const bool generateFunction = false;
 
-        const int superSampling = 2;
-        const int screenX = 128;
-        const int screenY = 128;
+        public const int superSampling = 2;
+        public const int screenX = 128;
+        public const int screenY = 128;
 
-        const int renderX = screenX * superSampling;
-        const int renderY = screenY * superSampling;
+        public const int renderX = screenX * superSampling;
+        public const int renderY = screenY * superSampling;
 
         static PanelRenderer renderer;
 
@@ -73,6 +74,18 @@ namespace Audio // Note: actual namespace depends on the project name.
                 }
             }
         }
+        static int colIndex = 0;
+        static Color[] colArray = {Color.Red,Color.Blue,Color.Green,Color.Yellow,Color.White};
+        public static void GenerateNextColorFrame()
+        {
+            smoothBuffer = new Byte[renderX * renderY * 3];
+            
+            smoothBuffer = fillBlanksBuffer(smoothBuffer, colArray[colIndex].R, colArray[colIndex].G, colArray[colIndex].B);
+            colIndex++;
+            if (colIndex >= colArray.Length) colIndex = 0;
+
+            SendToScreenBuffer(smoothBuffer);
+        }
         static Byte[] GenerateTopping(byte[] buf)
         {
             for (int x = 0; x < renderX; x++)
@@ -101,6 +114,142 @@ namespace Audio // Note: actual namespace depends on the project name.
                 }
             }
             return buf;
+        }
+        /*static float getMaxInRange(float[] range)
+        {
+            
+        }*/
+        static double lastMax = 0;
+        static Byte[] fadeScreen(byte[] buf)
+        {
+            for (int x = 0; x < renderX; x++)
+            {
+                for (int y = 0; y < renderY; y++)
+                {
+                    if (buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] > 0)
+                        buf[(x * 3 + ((renderY - 1) - y) * renderX * 3) + 0] = (byte)(buf[(x * 3 + ((renderY - 1) - y) * renderX * 3) + 0] - 1);
+                    if (buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] > 0)
+                        buf[(x * 3 + ((renderY - 1) - y) * renderX * 3) + 1] = (byte)(buf[(x * 3 + ((renderY - 1) - y) * renderX * 3) + 1] - 1);
+                    if (buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] > 0)
+                        buf[(x * 3 + ((renderY - 1) - y) * renderX * 3) + 2] = (byte)(buf[(x * 3 + ((renderY - 1) - y) * renderX * 3) + 2] - 1);
+                }
+            }
+            return buf;
+        }
+        static KickDetector kickDetector;
+        static void testForKick(double[] data)
+        {
+            /*double[] paddedAudio = FftSharp.Pad.ZeroPad(data);
+            double[] fftMag = FftSharp.Transform.FFTmagnitude(paddedAudio);
+            double fftPeriod = FftSharp.Transform.FFTfreqPeriod(SampleRate, fftMag.Length);
+            for (int i = 0; i < renderX * renderY * 3; i++)
+            {
+                smoothBuffer[i] = 0;
+            }
+            var window = new FftSharp.Windows.Hanning();
+            window.ApplyInPlace(data);
+
+            paddedAudio = FftSharp.Pad.ZeroPad(data);
+            System.Numerics.Complex[] spectrum = FftSharp.FFT.Forward(paddedAudio);
+            */
+
+            var floatvalues = new float[data.Length];
+            for (int i = 0; i < data.Length; i++)
+            {
+                floatvalues[i] = (float)data[i];
+            }
+            kickDetector.ProcessAudioFrame(floatvalues);
+        }
+        static void GenerateKickFrame(double[] data)
+        {
+
+            double[] paddedAudio = FftSharp.Pad.ZeroPad(data);
+            double[] fftMag = FftSharp.Transform.FFTmagnitude(paddedAudio);
+            double fftPeriod = FftSharp.Transform.FFTfreqPeriod(SampleRate, fftMag.Length);
+            for (int i = 0; i < renderX * renderY * 3; i++)
+            {
+                smoothBuffer[i] = 0;
+            }
+            var window = new FftSharp.Windows.Hanning();
+            window.ApplyInPlace(data);
+
+            paddedAudio = FftSharp.Pad.ZeroPad(data);
+            System.Numerics.Complex[] spectrum = FftSharp.FFT.Forward(paddedAudio);
+            double[] fft = FftSharp.FFT.Power(spectrum);
+            double[] freq = FftSharp.FFT.FrequencyScale(fft.Length, SampleRate);
+
+            Array.Copy(fft, FftValues, fft.Length);
+            double maxVal = 0f;
+            double minFreq = 20;
+            double maxFreq = 200;
+
+            for (int i = 0; i < fft.Length; i++)
+            {
+                double frequency = freq[i];
+                if (frequency > maxFreq) continue;
+                if (frequency < minFreq) continue;
+
+                if (FftValues[i] > maxVal) maxVal = FftValues[i];
+            }
+
+            double diff = maxVal - lastMax;
+            lastMax = maxVal;
+
+            int falloff = 8;
+            if(diff > 0.5d)
+            {
+                for (int x = 0; x < renderX; x++)
+                {
+                    for (int y = 0; y < renderY; y++)
+                    {
+                        Color col = Color.FromArgb(255, 255, 255, 255);
+                        buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = col.R;
+                        buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = col.G;
+                        buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = col.B;
+                    }
+                }
+            }
+            else
+            {
+                for (int x = 0; x < renderX; x++)
+                {
+                    for (int y = 0; y < renderY; y++)
+                    {
+                        if (buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] - falloff >= 0)
+                            buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = (byte)(buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] - falloff);
+                        else
+                            buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = 0;
+
+                        if (buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] - falloff >= 0)
+                            buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = (byte)(buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] - falloff);
+                        else
+                            buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = 0;
+
+                        if (buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] - falloff >= 0)
+                            buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = (byte)(buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] - falloff);
+                        else
+                            buffer[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = 0;
+                    }
+                }
+            }
+
+            Array.Copy(buffer, 0, smoothBuffer, 0, buffer.Length);
+
+            byte[] entry = new byte[smoothBuffer.Length];
+            smoothBuffer.CopyTo(entry, 0);
+
+            SendToScreenBuffer(entry);
+
+            timer.Stop();
+            if (timer.ElapsedMilliseconds == 0)
+            {
+                drawps = 1000;
+            }
+            else
+            {
+                drawps = 1000 / timer.ElapsedMilliseconds;
+            }
+            timer.Reset();
         }
         static void GenerateBuffer(double[] data)
         {
@@ -193,7 +342,7 @@ namespace Audio // Note: actual namespace depends on the project name.
                 }
             }
         }
-        static void SendToScreenBuffer(byte[] entry)
+        public static void SendToScreenBuffer(byte[] entry)
         {
             renderer.addFrame(entry);
         }
@@ -381,25 +530,19 @@ namespace Audio // Note: actual namespace depends on the project name.
             {
                 buffer[i] = 0;
             }
-            //Thread t = new Thread(SendLoop);
-            //t.Start();
+
+            int sampleSize = 2400;//4800
+            int skipSize = FftSize; //sampleSize / 8
+            kickDetector = new KickDetector(SampleRate, FftSize, 2000000, 7500);
+            //kickDetector.onKickEnter += Kick();
             Stopwatch cycle = new Stopwatch();
             cycle.Start();
             while (true)
             {
-                //if (dataLength == 0)
-                //{
-                //    Thread.Sleep(1);
-                //    continue;
-                //}
                 try
                 {
-
-                    long sampleSize = 4800;//4800
-                    long skipSize = sampleSize/8;
                     if (AudioBufferLength < sampleSize)
                     {
-                        
                         continue;
                     }
                     //double[] shortenedData = new double[AudioValues.Length];
@@ -408,21 +551,23 @@ namespace Audio // Note: actual namespace depends on the project name.
                     //int samples = dataLength / 882;
                     
                     
-                    double[] data = new double[sampleSize];
-                    FftValues = new double[sampleSize];
+                    double[] data = new double[FftSize];
+
                     //Array.Copy(shortenedData, i * (shortenedData.Length / samples), data, 0, shortenedData.Length / samples);
-                    Array.Copy(AudioBuffer, 0, data, 0, sampleSize);
-                    Array.Copy(AudioBuffer, skipSize, AudioBuffer, 0, sampleSize);
+                    Array.Copy(AudioBuffer, 0, data, 0, FftSize);
+                    Array.Copy(AudioBuffer, skipSize, AudioBuffer, 0, SampleRate);
                     AudioBufferLength -= skipSize;
                     //Console.WriteLine(AudioBufferLength);
                     
                     //Console.WriteLine(AudioBufferLength);
                     paddedAudio = FftSharp.Pad.ZeroPad(data);
-                    GenerateBuffer(paddedAudio);
-                    GenerateFrame();
+                    //GenerateBuffer(paddedAudio);
+                    //GenerateFrame();
+                    //GenerateKickFrame(paddedAudio);
+                    testForKick(data);
 
-                    for (int z = 0; z < 4 * superSampling; z++) Drop();
-                    for (int z = 0; z < 1; z++) DropTopping();
+                    //for (int z = 0; z < 4 * superSampling; z++) Drop();
+                    //for (int z = 0; z < 1; z++) DropTopping();
                     /*for (int x = 0; x < renderX; x++)
                     {
                         for (int y = renderY - 1; y >= 0; y--)
@@ -451,6 +596,10 @@ namespace Audio // Note: actual namespace depends on the project name.
             Console.WriteLine("C# Audio Level Meter");
             Console.WriteLine("(press any key to exit)");
             Console.ReadKey();
+        }
+        static void Kick()
+        {
+            Console.WriteLine("OnKickEnter");
         }
         static byte[] IntensifyBuffer(byte[] buf)
         {
