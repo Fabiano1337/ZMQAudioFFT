@@ -33,7 +33,7 @@ namespace Audio
                 Color dimCol = Color.FromArgb(255,r,g,b);
                 if (timer.ElapsedMilliseconds >= fadeOutTime) break;
                 sendColor(dimCol);
-                Thread.Sleep(5);
+                //Thread.Sleep(5);
             }
             sendColor(Color.FromArgb(0,0,0,0));
         }

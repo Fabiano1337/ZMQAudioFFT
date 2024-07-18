@@ -533,7 +533,7 @@ namespace Audio // Note: actual namespace depends on the project name.
 
             int sampleSize = 2400;//4800
             int skipSize = FftSize; //sampleSize / 8
-            kickDetector = new KickDetector(SampleRate, FftSize, 2000000, 7500);
+            kickDetector = new KickDetector(SampleRate, FftSize, 200000, 1000);
             //kickDetector.onKickEnter += Kick();
             Stopwatch cycle = new Stopwatch();
             cycle.Start();
