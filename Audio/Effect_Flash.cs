@@ -8,54 +8,117 @@ using System.Threading.Tasks;
 
 namespace Audio
 {
-    class Effect_Flash
+    class Effect_Flash : Effect
     {
-        Byte[] buffer;
-        int renderX, renderY;
+        int[] buffer;
+        int renderX, renderY, quadrant;
         float fadeOutTime;
         Stopwatch timer;
         Color col;
-        public Effect_Flash(int renderX,int renderY,float fadeOutTime, Color col)
+        public Effect_Flash(int renderX,int renderY,float fadeOutTime, Color col, int quadrant)
         {
+            this.quadrant = quadrant;
             this.renderY = renderY;
             this.renderX = renderX;
             this.fadeOutTime = fadeOutTime;
             this.col = col;
         }
-        public void Start()
+        public override void Start()
         {
+            running = true;
             timer = Stopwatch.StartNew();
-            while(true)
-            {
-                byte r = (byte)(col.R * (1-(timer.ElapsedMilliseconds / fadeOutTime)));
-                byte g = (byte)(col.G * (1-(timer.ElapsedMilliseconds / fadeOutTime)));
-                byte b = (byte)(col.B * (1-(timer.ElapsedMilliseconds / fadeOutTime)));
-                Color dimCol = Color.FromArgb(255,r,g,b);
-                if (timer.ElapsedMilliseconds >= fadeOutTime) break;
-                sendColor(dimCol);
-                //Thread.Sleep(5);
-            }
-            sendColor(Color.FromArgb(0,0,0,0));
         }
-        private void sendColor(Color col)
+        public override int[] drawFrame()
         {
-            buffer = new Byte[renderX * renderY * 3];
+            byte r = (byte)(col.R * (1 - (timer.ElapsedMilliseconds / fadeOutTime)));
+            byte g = (byte)(col.G * (1 - (timer.ElapsedMilliseconds / fadeOutTime)));
+            byte b = (byte)(col.B * (1 - (timer.ElapsedMilliseconds / fadeOutTime)));
+            if (timer.ElapsedMilliseconds >= fadeOutTime) running=false;
 
-            buffer = fillBlanksBuffer(buffer, col.R, col.G, col.B);
+            buffer = new int[renderX * renderY * 3];
 
-            Audio.SendToScreenBuffer(buffer);
+            buffer = clearBuffer(buffer);
+
+            buffer = fillBlanksBuffer(buffer, r, g, b, quadrant);
+
+            return buffer;
         }
-        byte[] fillBlanksBuffer(byte[] buf, byte r, byte g, byte b)
+        public override void Stop()
+        {
+            running = false;
+        }
+        int[] clearBuffer(int[] buf)
         {
             for (int x = 0; x < renderX; x++)
             {
                 for (int y = 0; y < renderY; y++)
                 {
-                    if (buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] == 0 && buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] == 0 && buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] == 0)
+                    buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = -1;
+                    buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = -1;
+                    buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = -1;
+                }
+            }
+            return buf;
+        }
+        int[] fillBlanksBuffer(int[] buf, byte r, byte g, byte b, int quadrant)
+        {
+            if (quadrant == -1)
+            {
+                for (int x = 0; x < renderX; x++)
+                {
+                    for (int y = 0; y < renderY; y++)
                     {
-                        buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = b;
-                        buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = r;
-                        buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = g;
+                            if (b != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = b;
+                            if (r != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = r;
+                            if (g != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = g;
+                    }
+                }
+            }
+            if (quadrant == 0)
+            {
+                for (int x = 0; x < renderX / 2; x++)
+                {
+                    for (int y = 0; y < renderY / 2; y++)
+                    {
+                        if (b != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = b;
+                        if (r != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = r;
+                        if (g != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = g;
+                    }
+                }
+            }
+            if (quadrant == 1)
+            {
+                for (int x = renderX / 2; x < renderX; x++)
+                {
+                    for (int y = 0; y < renderY / 2; y++)
+                    {
+                        if (b != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = b;
+                        if (r != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = r;
+                        if (g != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = g;
+                    }
+                }
+            }
+            if (quadrant == 2)
+            {
+                for (int x = 0; x < renderX / 2; x++)
+                {
+                    for (int y = renderY/2; y < renderY; y++)
+                    {
+                        if (b != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = b;
+                        if (r != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = r;
+                        if (g != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = g;
+                    }
+                }
+            }
+            if (quadrant == 3)
+            {
+                for (int x = renderX / 2; x < renderX; x++)
+                {
+                    for (int y = renderY/2; y < renderY; y++)
+                    {
+                        if (b != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 0] = b;
+                        if (r != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 1] = r;
+                        if (g != 0) buf[(((renderX - 1) - x) * 3 + y * renderX * 3) + 2] = g;
                     }
                 }
             }
