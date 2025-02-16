@@ -1,31 +1,34 @@
 ﻿using Audio;
 using FftSharp;
 using NAudio.Dsp;
+using System;
 using System.Drawing;
 
-public class KickDetector
+public class FrequencyDetector
 {
-    private const int KickMinFrequency = 30;
-    private const int KickMaxFrequency = 200;
-    private double kickThreshhold, timeThreshhold;
+    private int minFrequency;
+    private int maxFrequency;
+    private double threshhold, timeThreshhold;
     private int sampleRate;
     private int fftSize;
-    private int minKickBin;
-    private int maxKickBin;
+    private int minBin;
+    private int maxBin;
 
-    public event Action KickDetected;
+    public event Action<double> onFrequency;
 
     private BiQuadFilter bandPassFilter;
 
-    public KickDetector(int sampleRate, int fftSize, double kickThreshhold, double timeThreshhold)
+    public FrequencyDetector(int sampleRate, int fftSize, double threshhold, double timeThreshhold, int minFrequency, int maxFrequency)
     {
+        this.minFrequency = minFrequency;
+        this.maxFrequency = maxFrequency;
         this.sampleRate = sampleRate;
         this.fftSize = fftSize;
-        this.kickThreshhold = kickThreshhold;
+        this.threshhold = threshhold;
         this.timeThreshhold = timeThreshhold;
-        this.minKickBin = FrequencyToBin(KickMinFrequency, sampleRate, fftSize);
-        this.maxKickBin = FrequencyToBin(KickMaxFrequency, sampleRate, fftSize);
-        this.bandPassFilter = BiQuadFilter.BandPassFilterConstantSkirtGain(sampleRate, (KickMinFrequency + KickMaxFrequency) / 2.0f, 1.0f);
+        this.minBin = FrequencyToBin(minFrequency, sampleRate, fftSize);
+        this.maxBin = FrequencyToBin(maxFrequency, sampleRate, fftSize);
+        this.bandPassFilter = BiQuadFilter.BandPassFilterConstantSkirtGain(sampleRate, (minFrequency + maxFrequency) / 2.0f, 1.0f);
     }
 
     public void ProcessAudioFrame(float[] audioFrame)
@@ -51,33 +54,33 @@ public class KickDetector
         FFT.Forward(fftResult);
 
         // Calculate magnitudes in the kick drum frequency range
-        double kickMagnitude = GetKickMagnitude(fftResult);
+        double magnitude = GetMagnitude(fftResult);
 
         // Check for amplitude spike in time domain
         double timeDomainPeak = GetTimeDomainPeak(filteredFrame);
 
-        //Console.WriteLine(kickMagnitude);
+        //Console.WriteLine(magnitude);
         //Console.WriteLine(timeDomainPeak);
 
         // Combine frequency and time domain features
-        if (kickMagnitude > kickThreshhold && timeDomainPeak > timeThreshhold)
+        if (magnitude > threshhold) //  && timeDomainPeak > timeThreshhold
         {
-            OnKickDetected();
+            OnFrequencyDetected(magnitude);
         }
         else
         {
-            kicked = false;
+            if(magnitude < threshhold*0.85f) triggered = false;
         }
     }
 
-    private double GetKickMagnitude(System.Numerics.Complex[] fftResult)
+    private double GetMagnitude(System.Numerics.Complex[] fftResult)
     {
         double magnitudeSum = 0;
-        for (int i = minKickBin; i <= maxKickBin; i++)
+        for (int i = minBin; i <= maxBin; i++)
         {
             magnitudeSum += fftResult[i].Magnitude;
         }
-        return magnitudeSum / (maxKickBin - minKickBin + 1);
+        return magnitudeSum / (maxBin - minBin + 1);
     }
 
     private double GetTimeDomainPeak(float[] audioFrame)
@@ -94,25 +97,20 @@ public class KickDetector
     {
         return (int)(frequency * fftSize / sampleRate);
     }
-    bool kicked = false;
-    protected virtual void OnKickDetected()
+    bool triggered = false;
+    protected virtual void OnFrequencyDetected(double amplitude)
     {
-        if(!kicked)
+        if (!triggered)
         {
-            kicked = true;
-            onKickEnter();
+            triggered = true;
+            //onFrequencyEnter();
+            onFrequency?.Invoke(amplitude);
         }
-        KickDetected?.Invoke();
     }
-    int colIndex = 0;
-    Color[] colArray = { Color.Red, Color.Blue, Color.Green, Color.Yellow, Color.White };
-    void onKickEnter()
+
+    void onFrequencyEnter()
     {
-        Effect_Flash flash = new Effect_Flash(Audio.Audio.renderX, Audio.Audio.renderY, 100, colArray[colIndex]);
-        flash.Start();
-        colIndex++;
-        if (colIndex >= colArray.Length) colIndex = 0;
         //Audio.Audio.GenerateNextColorFrame();
-        Console.WriteLine("kick");
+        //Console.WriteLine("frequency");
     }
 }
