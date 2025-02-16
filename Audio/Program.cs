@@ -19,7 +19,7 @@ namespace Audio // Note: actual namespace depends on the project name.
     class Audio // Todo : testing SuperSampling
     {
         static readonly int SampleRate = 48000;
-        static readonly int FftSize = 4096/2;
+        static readonly int FftSize = 4096/4;
         static readonly int BitDepth = 16;
         static readonly int ChannelCount = 1;
         static readonly int BufferMilliseconds = 100;
@@ -136,7 +136,8 @@ namespace Audio // Note: actual namespace depends on the project name.
             }
             return buf;
         }
-        static KickDetector kickDetector;
+        static FrequencyDetector[] detectors;
+        //static FrequencyDetector kickDetector;
         static void testForKick(double[] data)
         {
             /*double[] paddedAudio = FftSharp.Pad.ZeroPad(data);
@@ -158,7 +159,12 @@ namespace Audio // Note: actual namespace depends on the project name.
             {
                 floatvalues[i] = (float)data[i];
             }
-            kickDetector.ProcessAudioFrame(floatvalues);
+            for (int i = 0; i < detectors.Length; i++)
+            {
+                detectors[i].ProcessAudioFrame(floatvalues);
+                //var t = new Thread(() => detectors[i].ProcessAudioFrame(floatvalues));
+                //t.Start();
+            }
         }
         static void GenerateKickFrame(double[] data)
         {
@@ -497,12 +503,19 @@ namespace Audio // Note: actual namespace depends on the project name.
             timer.Reset();
         }
         static int dataLength;
+        const double kickThreshhold = 1000000;
+        const double clapThreshhold = 150000;
+        const double melodyThreshhold = 10000;
+        const double hiHatThreshhold = 50000;
+
+        static EffectManager effectManager;
         static void Main(string[] args)
         {
-            //Console.WriteLine();
+            Console.WriteLine("Audio analizing tool");
+            effectManager = new EffectManager(renderX, renderY);
             //while (true) { }
             renderer = new PanelRenderer(screenX,screenY,superSampling,3);
-            renderer.connect("192.168.178.53", 1500);
+            renderer.connect("10.2.183.5", 1500);
 
             //client = new RequestSocket(">tcp://192.168.178.53:1500");
             FConsole.Initialize("Visualizer", ConsoleColor.Red, ConsoleColor.Black);
@@ -533,8 +546,22 @@ namespace Audio // Note: actual namespace depends on the project name.
 
             int sampleSize = 2400;//4800
             int skipSize = FftSize; //sampleSize / 8
-            kickDetector = new KickDetector(SampleRate, FftSize, 200000, 1000);
-            //kickDetector.onKickEnter += Kick();
+
+            detectors = new FrequencyDetector[4];
+            FrequencyDetector detector;
+            detector = new FrequencyDetector(SampleRate, FftSize, kickThreshhold / 1, 1000 / 10, 20, 250);
+            detector.onFrequency += Kick; // green ?
+            detectors[0] = detector;
+            detector = new FrequencyDetector(SampleRate, FftSize, clapThreshhold, 250 / 10, 800, 4000);
+            //detector.onFrequency += Clap; // blue ?
+            detectors[1] = detector;
+            detector = new FrequencyDetector(SampleRate, FftSize, melodyThreshhold, 500/10, 600, 5000);
+            detector.onFrequency += Melody; // red ?
+            detectors[2] = detector;
+            detector = new FrequencyDetector(SampleRate, FftSize, hiHatThreshhold, 125 / 10, 6000, 15000);
+            detector.onFrequency += HiHat; // white
+            detectors[3] = detector;
+
             Stopwatch cycle = new Stopwatch();
             cycle.Start();
             while (true)
@@ -576,6 +603,7 @@ namespace Audio // Note: actual namespace depends on the project name.
                         }
                     }*/
 
+                    Thread.Sleep(1); // prevent div/0
                     Console.Clear();
                     Console.SetCursorPosition(0, 0);
                     Console.WriteLine("Draw : " + (1000/cycle.ElapsedMilliseconds) + "/s");
@@ -597,9 +625,63 @@ namespace Audio // Note: actual namespace depends on the project name.
             Console.WriteLine("(press any key to exit)");
             Console.ReadKey();
         }
-        static void Kick()
+        //static Effect_Flash? flash = null;
+        const float extendTreshhold = 1f; //how much space for expansion of brightness there is
+        static void Kick(double amplitude)
         {
-            Console.WriteLine("OnKickEnter");
+            Console.WriteLine("onKick: " + amplitude);
+            double maxFactor = kickThreshhold * extendTreshhold;
+            double factor = amplitude / maxFactor;
+            if (factor > 1)
+            {
+                Console.WriteLine("Kick factor capped");
+                factor = 1;
+            }
+            Effect_Flash flash = new Effect_Flash(renderX, renderY, 125, Color.FromArgb(255, (int)(255 * factor), (int)(255 * factor), (int)(255 * factor)), 0); //colArray[colIndex]
+            effectManager.runEffect(flash);
+            flash = new Effect_Flash(renderX, renderY, 125, Color.FromArgb(255, (int)(255 * factor), (int)(255 * factor), (int)(255 * factor)), 1); //colArray[colIndex]
+            effectManager.runEffect(flash);
+            //colIndex++;
+            //if (colIndex >= colArray.Length) colIndex = 0;
+        }
+        static void Clap(double amplitude)
+        {
+            Console.WriteLine("onClap: " + amplitude);
+            double maxFactor = clapThreshhold * extendTreshhold;
+            double factor = amplitude / maxFactor;
+            if (factor > 1)
+            {
+                Console.WriteLine("Clap factor capped");
+                factor = 1;
+            }
+            Effect_Flash flash = new Effect_Flash(renderX, renderY, 50, Color.FromArgb(255, 0, (int)(255 * factor), 0),1); //colArray[colIndex]
+            effectManager.runEffect(flash);
+        }
+        static void Melody(double amplitude)
+        {
+            Console.WriteLine("onMelody: " + amplitude);
+            double maxFactor = melodyThreshhold * extendTreshhold;
+            double factor = amplitude / maxFactor;
+            if (factor > 1)
+            {
+                Console.WriteLine("Melody factor capped");
+                factor = 1;
+            }
+            Effect_Flash flash = new Effect_Flash(renderX, renderY, 50, Color.FromArgb(255, 0, 0, (int)(255 * factor)), 2); //colArray[colIndex]
+            effectManager.runEffect(flash);
+        }
+        static void HiHat(double amplitude)
+        {
+            Console.WriteLine("onHiHat: " + amplitude);
+            double maxFactor = hiHatThreshhold * extendTreshhold;
+            double factor = amplitude / maxFactor;
+            if (factor > 1)
+            {
+                Console.WriteLine("Melody factor capped");
+                factor = 1;
+            }
+            Effect_Flash flash = new Effect_Flash(renderX, renderY, 25, Color.FromArgb(255, 0, (int)(255 * factor), 0), 3); //colArray[colIndex]
+            effectManager.runEffect(flash);
         }
         static byte[] IntensifyBuffer(byte[] buf)
         {
